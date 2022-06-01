@@ -16,6 +16,7 @@
 #include "enqueue.h"
 #include "graph.h"
 #include "argcheck.h"
+#include "profiler.h"
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
@@ -73,6 +74,7 @@ static ncclResult_t ncclInit() {
     maxLocalSizeBytes = ncclKernMaxLocalSize();
     NCCLCHECK(ncclNetInit());
     INFO(NCCL_INIT, "Using network %s", ncclNetName());
+    NCCLCHECK(ncclProfilerInit());
     initialized = true;
   }
   pthread_mutex_unlock(&initLock);
