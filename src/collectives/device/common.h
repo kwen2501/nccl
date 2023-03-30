@@ -87,7 +87,7 @@ struct RunWork {
       if (wid < we->nWarps) {
         RunWorkElement<Fn, T, RedOp, Algo, Proto>().run(we);
       }
-      we = (ncclWorkElem*)((char*)we + stride);
+      we = (ncclWorkElem*)((char*)we + NCCL_MAX_WORK_ELEMENTS * stride);
     }
   }
 };
