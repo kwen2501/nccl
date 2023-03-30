@@ -448,7 +448,7 @@ class Primitives<
  public:
   __device__ Primitives(
       int tid, int nthreads, int const *recvPeers, int const *sendPeers,
-      void const *inputBuf, void *outputBuf, uint64_t redOpArg, uint32_t group=0, struct ncclWorkElem* e = nullptr
+      void const *inputBuf = nullptr, void *outputBuf = nullptr, uint64_t redOpArg = 0, uint32_t group=0, struct ncclWorkElem* e = nullptr
     ):
     tid(tid), tidInBlock(threadIdx.x),
     stepSize(ncclShmem.comm.buffSizes[NCCL_PROTO_SIMPLE]/NCCL_STEPS/sizeof(T)) {
@@ -489,8 +489,6 @@ class Primitives<
 
     loadRecvConn(&ncclShmem.channel.peers[peer], connIndex, e);
     loadSendConn(&ncclShmem.channel.peers[peer], connIndex, e);
-
-    setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclWorkElemReg*)e);
   }
 
   __device__ ~Primitives() {
@@ -507,7 +505,7 @@ class Primitives<
     barrier();
   }
 
-  __device__ void setDataPtrs(void const *inputBuf, void *outputBuf, uint64_t redOpArg, struct ncclWorkElemReg* e) {
+  __device__ void setDataPtrs(void const *inputBuf, void *outputBuf, uint64_t redOpArg = 0, struct ncclWorkElemReg* e = nullptr) {
     if (flags & RoleInput) {
       userBuff = (T*)inputBuf;
       ncclShmem.redOpArgs[0] = redOpArg;  // scaler for local input

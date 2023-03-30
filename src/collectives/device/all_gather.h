@@ -13,65 +13,71 @@ namespace {
   __device__ __forceinline__ void runRing(ncclWorkElem *args) {
     const int tid = threadIdx.x;
     const int nthreads = args->nWarps*WARP_SIZE;
-    const int bid = args->bid;
-    const int nChannels = args->nChannels;
     ncclRing *ring = &ncclShmem.channel.ring;
     const int *ringRanks = ring->userRanks;
     const ssize_t chunkSize = int(Proto::calcBytePerStep()/sizeof(T) * (Proto::Id == NCCL_PROTO_SIMPLE ? ALLGATHER_CHUNKSTEPS : 1));
     // We should not need the final /2 but it makes performance much, much smoother. Might be a bug somewhere.
     const ssize_t minChunkSizeLL128 = int(nthreads*(Proto::calcBytePerGrain()/sizeof(T))/2);
     const int nranks = ncclShmem.comm.nRanks;
-    const ssize_t loopSize = nChannels*int(chunkSize);
-    const ssize_t size = args->count;
 
-    T *inputBuf = (T*)args->sendbuff;
-    T *outputBuf = (T*)args->recvbuff;
     Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
-      (tid, nthreads, &ring->prev, &ring->next, inputBuf, outputBuf, args->redOpArg);
+      (tid, nthreads, &ring->prev, &ring->next);
 
-    for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
-      ssize_t realChunkSize;
-      if (Proto::Id == NCCL_PROTO_SIMPLE) {
-        realChunkSize = min(chunkSize, divUp(size-gridOffset,nChannels));
-        realChunkSize = roundUp(realChunkSize, (nthreads-WARP_SIZE)*sizeof(uint64_t)/sizeof(T));
-      }
-      else if (Proto::Id == NCCL_PROTO_LL)
-        realChunkSize = size-gridOffset < loopSize ? args->lastChunkSize : chunkSize;
-      else if (Proto::Id == NCCL_PROTO_LL128)
-        realChunkSize = min(chunkSize, divUp(size-gridOffset, nChannels*minChunkSizeLL128)*minChunkSizeLL128);
-      realChunkSize = int(realChunkSize);
+    for (int i = 0; i < NCCL_MAX_WORK_ELEMENTS && args->isUsed; i++) {
+      int bid = args->bid;
+      ssize_t size = args->count;
+      const int nChannels = args->nChannels;
+      const ssize_t loopSize = nChannels*int(chunkSize);
 
-      ssize_t chunkOffset = gridOffset + int(bid*realChunkSize);
+      T *inputBuf = (T*)args->sendbuff;
+      T *outputBuf = (T*)args->recvbuff;
+      prims.setDataPtrs(inputBuf, outputBuf);
 
-      /////////////// begin AllGather steps ///////////////
-      ssize_t offset;
-      int nelem = min(realChunkSize, size-chunkOffset);
-      int rankDest;
+      for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
+        ssize_t realChunkSize;
+        if (Proto::Id == NCCL_PROTO_SIMPLE) {
+          realChunkSize = min(chunkSize, divUp(size-gridOffset,nChannels));
+          realChunkSize = roundUp(realChunkSize, (nthreads-WARP_SIZE)*sizeof(uint64_t)/sizeof(T));
+        }
+        else if (Proto::Id == NCCL_PROTO_LL)
+          realChunkSize = size-gridOffset < loopSize ? args->lastChunkSize : chunkSize;
+        else if (Proto::Id == NCCL_PROTO_LL128)
+          realChunkSize = min(chunkSize, divUp(size-gridOffset, nChannels*minChunkSizeLL128)*minChunkSizeLL128);
+        realChunkSize = int(realChunkSize);
 
-      // step 0: push data to next GPU
-      rankDest = ringRanks[0];
-      offset = chunkOffset + rankDest * size;
+        ssize_t chunkOffset = gridOffset + int(bid*realChunkSize);
 
-      if (inputBuf + chunkOffset == outputBuf + offset) { // In place
-        prims.directSend(chunkOffset, offset, nelem);
-      } else {
-        prims.directCopySend(chunkOffset, offset, offset, nelem);
-      }
+        /////////////// begin AllGather steps ///////////////
+        ssize_t offset;
+        int nelem = min(realChunkSize, size-chunkOffset);
+        int rankDest;
 
-      // k-2 steps: copy to next GPU
-      for (int j=1; j<nranks-1; ++j) {
-        rankDest = ringRanks[nranks-j];
+        // step 0: push data to next GPU
+        rankDest = ringRanks[0];
         offset = chunkOffset + rankDest * size;
 
-        prims.directRecvCopySend(offset, offset, nelem);
+        if (inputBuf + chunkOffset == outputBuf + offset) { // In place
+          prims.directSend(chunkOffset, offset, nelem);
+        } else {
+          prims.directCopySend(chunkOffset, offset, offset, nelem);
+        }
+
+        // k-2 steps: copy to next GPU
+        for (int j=1; j<nranks-1; ++j) {
+          rankDest = ringRanks[nranks-j];
+          offset = chunkOffset + rankDest * size;
+
+          prims.directRecvCopySend(offset, offset, nelem);
+        }
+
+        // Make final copy from buffer to dest.
+        rankDest = ringRanks[1];
+        offset = chunkOffset + rankDest * size;
+
+        // Final wait/copy.
+        prims.directRecv(offset, nelem);
       }
-
-      // Make final copy from buffer to dest.
-      rankDest = ringRanks[1];
-      offset = chunkOffset + rankDest * size;
-
-      // Final wait/copy.
-      prims.directRecv(offset, nelem);
+      args++;
     }
   }
 }
